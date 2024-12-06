@@ -5,6 +5,9 @@
 # Pass New Relic API details into this script or uncomment below
 # $accountId = ""  # Replace with your New Relic account ID
 # $insertKey = ""  # Replace with your New Relic insert API key
+
+# Pass Error window detection exe path
+# $windowDetectorPath = "......DetectErrWindow.exe" # Replace with your full filepath
 $entityName = $env:COMPUTERNAME    # Auto set computer name for NR metrics
 
 $EndTime = Get-Date
@@ -55,6 +58,59 @@ for(;;) {
     [Net.ServicePointManager]::SecurityProtocol = "tls12, tls11, tls"
     Invoke-WebRequest -Headers $headers -Method Post -Body $gzipBody -Uri $uri 
     
+    ###
+    # Crash "Error" window detector
+    ###
+    # Run the AutoHotkey exe and wait for it to exit
+    $process = Start-Process -FilePath $windowDetectorPath -Wait -PassThru
+
+    # Capture the exit code (0 for no error window, 1 for error window found)
+    $exitCode = $process.ExitCode
+
+    # Take action based on the exit code
+    If ($exitCode -eq 1) {
+        Write-Host "Error window found, taking action..."
+    
+        $body = @(
+            @{
+                "eventType" = "ErrorWindowDetection"    # Event type name (string)
+                "state" = "Error"                 
+                "entityName" = $entityName            # Entity Name (string)
+                "timestamp" = $timestamp              # Unix timestamp (number)
+            }
+        ) | ConvertTo-Json
+
+        # Set the headers for the API request
+        $headers = @{
+            "Api-Key" = $insertKey
+            "Content-Encoding" = "gzip"
+        }
+
+        # Encode the body as UTF8
+        $encoding = [System.Text.Encoding]::UTF8
+        $enc_data = $encoding.GetBytes($body)
+
+        # GZip compress the JSON payload
+        $output = [System.IO.MemoryStream]::new()
+        $gzipStream = New-Object System.IO.Compression.GzipStream $output, ([IO.Compression.CompressionMode]::Compress)
+        $gzipStream.Write($enc_data, 0, $enc_data.Length)
+        $gzipStream.Close()
+        $gzipBody = $output.ToArray()
+
+        # Define the API endpoint URL for the New Relic event
+        $uri = "https://insights-collector.newrelic.com/v1/accounts/$accountId/events"
+
+        # Send the HTTP POST request with compressed data
+        [Net.ServicePointManager]::SecurityProtocol = "tls12, tls11, tls"
+        Invoke-WebRequest -Headers $headers -Method Post -Body $gzipBody -Uri $uri 
+
+    }
+    ElseIf ($exitCode -eq 0) {
+        Write-Host "No Error window found."
+    }
+    Else {
+        Write-Host "Unexpected exit code: $exitCode"
+    } 
     # Wait for the next minute to come around
     Start-Sleep -Seconds $( [int]( New-TimeSpan -End $EndTime ).TotalSeconds ) 
 }
